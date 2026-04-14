@@ -77,14 +77,36 @@ def main() -> None:
     }).encode()
 
     sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-    r = requests.post(
-        callback_url,
-        data=body,
-        headers={"Content-Type": "application/json", "X-Signature": sig},
-        timeout=30,
-    )
-    print(f"Callback: {r.status_code} {r.text[:300]}", flush=True)
-    r.raise_for_status()
+
+    MAX_CALLBACK_ATTEMPTS = 3
+    CALLBACK_RETRY_DELAY = 5  # seconds
+
+    last_err = None
+    for attempt in range(1, MAX_CALLBACK_ATTEMPTS + 1):
+        try:
+            r = requests.post(
+                callback_url,
+                data=body,
+                headers={"Content-Type": "application/json", "X-Signature": sig},
+                timeout=30,
+            )
+            print(f"Callback (attempt {attempt}): {r.status_code} {r.text[:300]}", flush=True)
+            r.raise_for_status()
+            last_err = None
+            break  # success
+        except Exception as exc:
+            last_err = exc
+            print(f"[upload_r2] Callback attempt {attempt} failed: {exc}", flush=True)
+            if attempt < MAX_CALLBACK_ATTEMPTS:
+                time.sleep(CALLBACK_RETRY_DELAY)
+
+    if last_err:
+        print(
+            f"[upload_r2] WARNING: all {MAX_CALLBACK_ATTEMPTS} callback attempts failed. "
+            f"Video is at {video_url} — update the run manually if needed.",
+            flush=True,
+        )
+    # Upload succeeded — do not exit non-zero even if callback failed.
 
 
 if __name__ == "__main__":
