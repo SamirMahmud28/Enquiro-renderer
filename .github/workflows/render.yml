@@ -1,0 +1,119 @@
+name: Render Animation
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "ResearchGPT run_id"
+        required: true
+      manim_code:
+        description: "Manim Python source"
+        required: true
+      narration:
+        description: "Narration JSON (segments array)"
+        required: true
+      voice:
+        description: "Kokoro voice id"
+        required: false
+        default: "af_sarah"
+      callback_url:
+        description: "Backend callback URL"
+        required: true
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ffmpeg \
+            libcairo2-dev libpango1.0-dev \
+            texlive-latex-base texlive-fonts-recommended \
+            texlive-latex-extra texlive-science dvisvgm
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('render/requirements.txt') }}
+
+      - name: Install Python dependencies
+        run: pip install -r render/requirements.txt
+
+      - name: Cache Kokoro model
+        uses: actions/cache@v4
+        with:
+          path: ~/.kokoro
+          key: kokoro-onnx-v1
+
+      - name: Write payload to disk
+        env:
+          MANIM_CODE: ${{ inputs.manim_code }}
+          NARRATION: ${{ inputs.narration }}
+        run: |
+          mkdir -p work
+          printf '%s' "$MANIM_CODE" > work/scene.py
+          printf '%s' "$NARRATION" > work/narration.json
+
+      - name: Render scenes
+        working-directory: render
+        run: python render_scene.py ../work/scene.py ../work/scenes_out
+
+      - name: Generate narration audio
+        working-directory: render
+        env:
+          VOICE: ${{ inputs.voice }}
+        run: python generate_audio.py ../work/narration.json ../work/audio_out
+
+      - name: Merge video + audio
+        working-directory: render
+        run: python merge.py ../work/scenes_out ../work/audio_out ../work/final.mp4
+
+      - name: Upload to R2 and callback (success)
+        working-directory: render
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_SECRET: ${{ secrets.ANIMATION_CALLBACK_SECRET }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+        run: python upload_r2.py ../work/final.mp4
+
+      - name: Callback on failure
+        if: failure()
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_SECRET: ${{ secrets.ANIMATION_CALLBACK_SECRET }}
+        run: |
+          pip install requests
+          python - <<'PY'
+          import os, json, time, hmac, hashlib, requests
+          body = json.dumps({
+              "run_id": os.environ["RUN_ID"],
+              "status": "failed",
+              "error": "GitHub Actions render job failed. Check workflow logs.",
+              "ts": int(time.time()),
+          }).encode()
+          sig = hmac.new(os.environ["CALLBACK_SECRET"].encode(), body, hashlib.sha256).hexdigest()
+          r = requests.post(
+              os.environ["CALLBACK_URL"],
+              data=body,
+              headers={"Content-Type": "application/json", "X-Signature": sig},
+              timeout=30,
+          )
+          print("Failure callback:", r.status_code, r.text[:200])
+          PY
