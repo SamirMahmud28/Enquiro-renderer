@@ -15,6 +15,9 @@ from pathlib import Path
 def find_scene_classes(source_path: Path) -> list[str]:
     tree = ast.parse(source_path.read_text(encoding="utf-8"))
     scenes: list[str] = []
+    scene_names: set[str] = set()
+
+    # First pass: collect all Scene subclass names
     for node in tree.body:
         if not isinstance(node, ast.ClassDef):
             continue
@@ -25,8 +28,24 @@ def find_scene_classes(source_path: Path) -> list[str]:
             elif isinstance(base, ast.Attribute):
                 name = base.attr
             if name in {"Scene", "MovingCameraScene", "ThreeDScene", "ZoomedScene"}:
-                scenes.append(node.name)
+                scene_names.add(node.name)
                 break
+
+    # Second pass: keep only leaf scenes (ones that don't instantiate other scenes).
+    # LLMs sometimes emit a bogus "orchestrator" scene that does self.play(OtherScene())
+    # — that is invalid Manim and will crash the render.
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef) or node.name not in scene_names:
+            continue
+        references_other_scene = False
+        for child in ast.walk(node):
+            if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
+                if child.func.id in scene_names and child.func.id != node.name:
+                    references_other_scene = True
+                    break
+        if not references_other_scene:
+            scenes.append(node.name)
+
     return scenes
 
 
