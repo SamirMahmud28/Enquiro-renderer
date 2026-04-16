@@ -6,8 +6,8 @@ on:
       run_id:
         description: "ResearchGPT run_id"
         required: true
-      manim_code:
-        description: "Manim Python source"
+      slide_specs:
+        description: "Slide specs JSON array"
         required: true
       narration:
         description: "Narration JSON (segments array)"
@@ -37,9 +37,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             ffmpeg \
-            libcairo2-dev libpango1.0-dev \
-            texlive-latex-base texlive-fonts-recommended \
-            texlive-latex-extra texlive-science dvisvgm
+            fonts-dejavu-core
 
       - name: Cache pip
         uses: actions/cache@v4
@@ -58,16 +56,16 @@ jobs:
 
       - name: Write payload to disk
         env:
-          MANIM_CODE: ${{ inputs.manim_code }}
+          SLIDE_SPECS: ${{ inputs.slide_specs }}
           NARRATION: ${{ inputs.narration }}
         run: |
           mkdir -p work
-          printf '%s' "$MANIM_CODE" > work/scene.py
+          printf '%s' "$SLIDE_SPECS" > work/slide_specs.json
           printf '%s' "$NARRATION" > work/narration.json
 
-      - name: Render scenes
+      - name: Render slides
         working-directory: render
-        run: python render_scene.py ../work/scene.py ../work/scenes_out
+        run: python render_scene.py ../work/slide_specs.json ../work/scenes_out
 
       - name: Generate narration audio
         working-directory: render
