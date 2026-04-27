@@ -255,7 +255,7 @@ def slide_to_video(
         srt_escaped = str(srt_path.resolve()).replace("\\", "/")
         vf_filters.append(
             f"subtitles='{srt_escaped}'"
-            ":force_style='FontSize=32,PrimaryColour=&H00FFFFFF,"
+            ":force_style='FontSize=13,PrimaryColour=&H00FFFFFF,"
             "BackColour=&H80000000,BorderStyle=4,Outline=0,Shadow=0,MarginV=40'"
         )
 
