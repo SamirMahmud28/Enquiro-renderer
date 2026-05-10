@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+work/
+media/
+manim_media/
+*.mp4
+*.wav
+.env
+.venv/

@@ -1,0 +1,107 @@
+name: Render Audio
+
+on:
+  workflow_dispatch:
+    inputs:
+      session_id:
+        description: "Studio/Debate session_id"
+        required: true
+      dialogue_json:
+        description: "Dialogue JSON ({turns: [{speaker, voice, text}]})"
+        required: true
+      callback_url:
+        description: "Backend callback URL"
+        required: true
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('render/requirements.txt') }}
+
+      - name: Install Python dependencies
+        run: pip install -r render/requirements.txt
+
+      - name: Cache Kokoro model
+        uses: actions/cache@v4
+        with:
+          path: ~/.kokoro
+          key: kokoro-onnx-v1
+
+      - name: Write payload to disk
+        env:
+          DIALOGUE_JSON: ${{ inputs.dialogue_json }}
+        run: |
+          mkdir -p work
+          printf '%s' "$DIALOGUE_JSON" > work/dialogue.json
+
+      - name: Generate audio per turn
+        working-directory: render
+        run: python generate_podcast_audio.py ../work/dialogue.json ../work/audio_out
+
+      - name: Concatenate WAVs → MP3
+        run: |
+          ffmpeg -y -f concat -safe 0 \
+            -i work/audio_out/concat.txt \
+            -c:a libmp3lame -q:a 4 \
+            work/final.mp3
+
+      - name: Upload to R2 and callback (success)
+        working-directory: render
+        env:
+          SESSION_ID: ${{ inputs.session_id }}
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_SECRET: ${{ secrets.ANIMATION_CALLBACK_SECRET }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+        run: python upload_r2_audio.py ../work/final.mp3
+
+      - name: Callback on failure
+        if: failure()
+        env:
+          SESSION_ID: ${{ inputs.session_id }}
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_SECRET: ${{ secrets.ANIMATION_CALLBACK_SECRET }}
+        run: |
+          pip install requests
+          python - <<'PY'
+          import os, json, time, hmac, hashlib, requests
+          secret = os.environ.get("CALLBACK_SECRET", "")
+          body = json.dumps({
+              "session_id": os.environ["SESSION_ID"],
+              "status": "failed",
+              "error": "GitHub Actions audio render job failed. Check workflow logs.",
+              "ts": int(time.time()),
+          }).encode()
+          headers = {"Content-Type": "application/json"}
+          if secret:
+              sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+              headers["X-Signature"] = sig
+          r = requests.post(
+              os.environ["CALLBACK_URL"],
+              data=body,
+              headers=headers,
+              timeout=30,
+          )
+          print("Failure callback:", r.status_code, r.text[:200])
+          PY
